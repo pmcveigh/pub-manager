@@ -30,11 +30,15 @@ enum class CustomerState {
     Entering,
     GoingToQueue,
     Queueing,
+    BeingServed,
+    GoingToSeatOrStanding,
+    Drinking,
     GoingToSeat,
     Socializing,
     GoingToToilet,
     AtToilet,
-    Leaving
+    Leaving,
+    Exited
 };
 
 struct Customer {
@@ -46,6 +50,7 @@ struct Customer {
     float stateTimer = 0.0f;
     float waitTimer = 0.0f;
     float socialTimer = 0.0f;
+    float nextMessTimer = 0.0f;
     int queueIndex = -1;
     int seatIndex = -1;
     bool wantsToilet = false;
