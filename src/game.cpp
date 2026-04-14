@@ -1,8 +1,56 @@
 #include "entities.hpp"
 #include "config.hpp"
 
+#include <SDL2/SDL.h>
+
 #include <algorithm>
 #include <cmath>
+#include <random>
+
+namespace {
+std::mt19937& Rng() {
+    static std::mt19937 rng{std::random_device{}()};
+    return rng;
+}
+
+int RandomInt(int minValue, int maxValue) {
+    std::uniform_int_distribution<int> dist(minValue, maxValue);
+    return dist(Rng());
+}
+
+SDL_FRect ToSdlRect(Rect r) {
+    return SDL_FRect{r.x, r.y, r.width, r.height};
+}
+
+void SetColor(SDL_Renderer* renderer, Uint8 r, Uint8 g, Uint8 b, Uint8 a = 255) {
+    SDL_SetRenderDrawColor(renderer, r, g, b, a);
+}
+
+void FillRect(SDL_Renderer* renderer, Rect r) {
+    SDL_FRect fr = ToSdlRect(r);
+    SDL_RenderFillRectF(renderer, &fr);
+}
+
+void DrawRectOutline(SDL_Renderer* renderer, Rect r) {
+    SDL_FRect fr = ToSdlRect(r);
+    SDL_RenderDrawRectF(renderer, &fr);
+}
+
+void FillCenteredRect(SDL_Renderer* renderer, Vec2 center, float w, float h) {
+    SDL_FRect rect{center.x - w * 0.5f, center.y - h * 0.5f, w, h};
+    SDL_RenderFillRectF(renderer, &rect);
+}
+
+void DrawBar(SDL_Renderer* renderer, float x, float y, float width, float height, float normalized, Uint8 r, Uint8 g, Uint8 b) {
+    normalized = std::clamp(normalized, 0.0f, 1.0f);
+    SetColor(renderer, 38, 38, 44, 240);
+    SDL_FRect outer{x, y, width, height};
+    SDL_RenderFillRectF(renderer, &outer);
+    SetColor(renderer, r, g, b, 240);
+    SDL_FRect inner{x + 2.0f, y + 2.0f, (width - 4.0f) * normalized, height - 4.0f};
+    SDL_RenderFillRectF(renderer, &inner);
+}
+}
 
 Game::Game() {
     BuildLayout();
@@ -45,7 +93,7 @@ void Game::Reset() {
     nextMessId_ = 1;
     timeRemaining_ = Config::DayDuration;
     spawnTimer_ = 0.5f;
-    incidentTimer_ = GetRandomValue((int)(Config::IncidentIntervalMin * 100), (int)(Config::IncidentIntervalMax * 100)) / 100.0f;
+    incidentTimer_ = RandomInt(static_cast<int>(Config::IncidentIntervalMin * 100), static_cast<int>(Config::IncidentIntervalMax * 100)) / 100.0f;
     toiletBlockedTimer_ = 0.0f;
     showOverlay_ = false;
 
@@ -69,23 +117,23 @@ void Game::Reset() {
     incidentBanner_.timer = 0.0f;
 }
 
-void Game::HandleInput() {
+void Game::HandleInput(const InputState& input) {
     if (sessionState_ == SessionState::PreOpen) {
-        if (IsKeyPressed(KEY_UP)) drinkPrice_ += 0.5f;
-        if (IsKeyPressed(KEY_DOWN)) drinkPrice_ -= 0.5f;
+        if (input.upPressed) drinkPrice_ += 0.5f;
+        if (input.downPressed) drinkPrice_ -= 0.5f;
         drinkPrice_ = std::clamp(drinkPrice_, 2.0f, 14.0f);
-        if (IsKeyPressed(KEY_ENTER)) {
+        if (input.enterPressed) {
             sessionState_ = SessionState::Running;
         }
     } else if (sessionState_ == SessionState::Running) {
-        if (IsKeyPressed(KEY_M)) showOverlay_ = !showOverlay_;
+        if (input.toggleOverlayPressed) showOverlay_ = !showOverlay_;
     } else if (sessionState_ == SessionState::Summary) {
-        if (IsKeyPressed(KEY_R)) Reset();
+        if (input.restartPressed) Reset();
     }
 }
 
-void Game::Update(float dt) {
-    HandleInput();
+void Game::Update(float dt, const InputState& input) {
+    HandleInput(input);
 
     if (incidentBanner_.timer > 0.0f) {
         incidentBanner_.timer -= dt;
@@ -108,9 +156,9 @@ void Game::UpdateRunning(float dt) {
     }
 
     spawnTimer_ -= dt;
-    if (spawnTimer_ <= 0.0f && (int)customers_.size() < Config::MaxCustomers) {
+    if (spawnTimer_ <= 0.0f && static_cast<int>(customers_.size()) < Config::MaxCustomers) {
         SpawnCustomer();
-        spawnTimer_ = Config::CustomerSpawnInterval + GetRandomValue(0, 120) / 100.0f;
+        spawnTimer_ = Config::CustomerSpawnInterval + RandomInt(0, 120) / 100.0f;
     }
 
     UpdateQueueTargets();
@@ -132,8 +180,8 @@ void Game::SpawnCustomer() {
     c.target = {760, 330};
     c.state = CustomerState::Entering;
     c.stateTimer = 1.0f;
-    c.socialTimer = 15.0f + GetRandomValue(0, 1200) / 100.0f;
-    c.wantsToilet = GetRandomValue(0, 100) < 45;
+    c.socialTimer = 15.0f + RandomInt(0, 1200) / 100.0f;
+    c.wantsToilet = RandomInt(0, 100) < 45;
     customers_.push_back(c);
 }
 
@@ -150,88 +198,82 @@ void Game::UpdateCustomer(Customer& c, float dt) {
     c.mood = std::clamp(c.mood, 0.0f, 100.0f);
 
     switch (c.state) {
-        case CustomerState::Entering: {
+        case CustomerState::Entering:
             if (MoveTowards(c.pos, c.target, Config::CustomerMoveSpeed, dt)) {
                 c.state = CustomerState::GoingToQueue;
                 barQueue_.push_back(c.id);
-                c.queueIndex = (int)barQueue_.size() - 1;
+                c.queueIndex = static_cast<int>(barQueue_.size()) - 1;
             }
             break;
-        }
         case CustomerState::GoingToQueue:
         case CustomerState::Queueing: {
             if (c.queueIndex < 0) {
                 c.state = CustomerState::Queueing;
                 break;
             }
-            Vector2 queueTarget = layout_.queueSpots[std::min(c.queueIndex, (int)layout_.queueSpots.size() - 1)];
+            Vec2 queueTarget = layout_.queueSpots[std::min(c.queueIndex, static_cast<int>(layout_.queueSpots.size()) - 1)];
             MoveTowards(c.pos, queueTarget, Config::CustomerMoveSpeed, dt);
             c.state = CustomerState::Queueing;
             c.waitTimer += dt;
             c.mood -= Config::MoodWaitPenaltyPerSecond * dt;
             break;
         }
-        case CustomerState::GoingToSeat: {
+        case CustomerState::GoingToSeat:
             if (MoveTowards(c.pos, c.target, Config::CustomerMoveSpeed, dt)) {
                 c.state = CustomerState::Socializing;
-                c.stateTimer = 8.0f + GetRandomValue(0, 900) / 100.0f;
+                c.stateTimer = 8.0f + RandomInt(0, 900) / 100.0f;
             }
             break;
-        }
-        case CustomerState::Socializing: {
+        case CustomerState::Socializing:
             c.stateTimer -= dt;
-            if (GetRandomValue(0, 1000) < 2) {
-                AddMess({c.pos.x + GetRandomValue(-12, 12), c.pos.y + GetRandomValue(-12, 12)}, 0.7f);
+            if (RandomInt(0, 1000) < 2) {
+                AddMess({c.pos.x + static_cast<float>(RandomInt(-12, 12)), c.pos.y + static_cast<float>(RandomInt(-12, 12))}, 0.7f);
             }
             if (c.stateTimer <= 0.0f) {
-                if (c.wantsToilet && GetRandomValue(0, 100) < 60) {
+                if (c.wantsToilet && RandomInt(0, 100) < 60) {
                     c.state = CustomerState::GoingToToilet;
                     c.target = RandomPointInRect(layout_.toiletArea);
                     c.wantsToilet = false;
-                } else if (c.drinksConsumed < 2 && GetRandomValue(0, 100) < 48) {
+                } else if (c.drinksConsumed < 2 && RandomInt(0, 100) < 48) {
                     c.state = CustomerState::GoingToQueue;
                     barQueue_.push_back(c.id);
-                    c.queueIndex = (int)barQueue_.size() - 1;
+                    c.queueIndex = static_cast<int>(barQueue_.size()) - 1;
                 } else {
                     c.state = CustomerState::Leaving;
                     c.target = RandomPointInRect(layout_.exitArea);
                 }
             }
             break;
-        }
-        case CustomerState::GoingToToilet: {
+        case CustomerState::GoingToToilet:
             if (MoveTowards(c.pos, c.target, Config::CustomerMoveSpeed, dt)) {
                 c.state = CustomerState::AtToilet;
-                c.stateTimer = 4.0f + GetRandomValue(0, 300) / 100.0f;
+                c.stateTimer = 4.0f + RandomInt(0, 300) / 100.0f;
             }
             if (toiletBlockedTimer_ > 0.0f) {
                 c.mood -= 1.8f * dt;
             }
             break;
-        }
-        case CustomerState::AtToilet: {
+        case CustomerState::AtToilet:
             c.stateTimer -= dt;
             if (toiletBlockedTimer_ > 0.0f) {
                 c.mood -= 2.8f * dt;
             }
             if (c.stateTimer <= 0.0f) {
-                if (c.drinksConsumed < 2 && GetRandomValue(0, 100) < 35) {
+                if (c.drinksConsumed < 2 && RandomInt(0, 100) < 35) {
                     c.state = CustomerState::GoingToQueue;
                     barQueue_.push_back(c.id);
-                    c.queueIndex = (int)barQueue_.size() - 1;
+                    c.queueIndex = static_cast<int>(barQueue_.size()) - 1;
                 } else {
                     c.state = CustomerState::Leaving;
                     c.target = RandomPointInRect(layout_.exitArea);
                 }
             }
             break;
-        }
-        case CustomerState::Leaving: {
+        case CustomerState::Leaving:
             if (MoveTowards(c.pos, c.target, Config::CustomerMoveSpeed, dt, 8.0f)) {
                 c.shouldRemove = true;
             }
             break;
-        }
     }
 
     if (c.mood <= 8.0f && c.state != CustomerState::Leaving) {
@@ -241,7 +283,7 @@ void Game::UpdateCustomer(Customer& c, float dt) {
 }
 
 void Game::UpdateQueueTargets() {
-    for (int i = 0; i < (int)barQueue_.size(); ++i) {
+    for (int i = 0; i < static_cast<int>(barQueue_.size()); ++i) {
         auto* c = FindCustomer(barQueue_[i]);
         if (!c) continue;
         c->queueIndex = i;
@@ -253,7 +295,6 @@ void Game::UpdateBartender(float dt) {
         if (!barQueue_.empty()) {
             bartenderServingCustomerId_ = barQueue_.front();
             bartenderServeTimer_ = Config::BartenderServiceBaseTime;
-            bartenderServeTimer_ /= 1.0f;
         }
         return;
     }
@@ -270,7 +311,7 @@ void Game::UpdateBartender(float dt) {
         return;
     }
 
-    Vector2 serveSpot = {layout_.barCounter.x + 120, layout_.barCounter.y + layout_.barCounter.height + 16};
+    Vec2 serveSpot = {layout_.barCounter.x + 120, layout_.barCounter.y + layout_.barCounter.height + 16};
     if (!MoveTowards(c->pos, serveSpot, Config::CustomerMoveSpeed, dt)) {
         return;
     }
@@ -362,29 +403,29 @@ void Game::UpdateIncidents(float dt) {
     incidentTimer_ -= dt;
     if (incidentTimer_ > 0.0f) return;
 
-    incidentTimer_ = GetRandomValue((int)(Config::IncidentIntervalMin * 100), (int)(Config::IncidentIntervalMax * 100)) / 100.0f;
+    incidentTimer_ = RandomInt(static_cast<int>(Config::IncidentIntervalMin * 100), static_cast<int>(Config::IncidentIntervalMax * 100)) / 100.0f;
     stats_.incidents += 1;
 
-    int type = GetRandomValue(0, 3);
+    int type = RandomInt(0, 3);
     if (type == 0) {
-        Vector2 p = RandomPointInRect(layout_.standingArea);
+        Vec2 p = RandomPointInRect(layout_.standingArea);
         AddMess(p, 1.4f);
-        incidentBanner_.text = "Incident: Big spill in standing area";
+        incidentBanner_.text = "spill";
         incidentBanner_.timer = 4.0f;
     } else if (type == 1) {
         toiletBlockedTimer_ = Config::ToiletBlockDuration;
-        incidentBanner_.text = "Incident: Toilet blocked";
+        incidentBanner_.text = "toilet";
         incidentBanner_.timer = 4.0f;
     } else if (type == 2) {
-        incidentBanner_.text = "Incident: Argument broke out";
+        incidentBanner_.text = "argument";
         incidentBanner_.timer = 4.0f;
-        Vector2 p = RandomPointInRect(layout_.standingArea);
+        Vec2 p = RandomPointInRect(layout_.standingArea);
         for (auto& c : customers_) {
             float dx = c.pos.x - p.x;
             float dy = c.pos.y - p.y;
             if (dx * dx + dy * dy < 12000.0f) {
                 c.mood -= 12.0f;
-                if (GetRandomValue(0, 100) < 18) {
+                if (RandomInt(0, 100) < 18) {
                     c.state = CustomerState::Leaving;
                     c.target = RandomPointInRect(layout_.exitArea);
                 }
@@ -395,12 +436,12 @@ void Game::UpdateIncidents(float dt) {
         float reduceCider = std::min(stockCider_, 5.0f);
         stockBeer_ -= reduceBeer;
         stockCider_ -= reduceCider;
-        incidentBanner_.text = "Incident: Supplier issue reduced stock";
+        incidentBanner_.text = "stock";
         incidentBanner_.timer = 4.0f;
     }
 }
 
-void Game::AddMess(Vector2 pos, float amount) {
+void Game::AddMess(Vec2 pos, float amount) {
     Mess m;
     m.id = nextMessId_++;
     m.pos = pos;
@@ -448,25 +489,25 @@ Mess* Game::FindMess(int id) {
 }
 
 int Game::FindFreeSeatIndex() {
-    for (int i = 0; i < (int)layout_.seats.size(); ++i) {
+    for (int i = 0; i < static_cast<int>(layout_.seats.size()); ++i) {
         if (!layout_.seats[i].occupied) return i;
     }
     return -1;
 }
 
 void Game::FreeSeat(int index) {
-    if (index >= 0 && index < (int)layout_.seats.size()) {
+    if (index >= 0 && index < static_cast<int>(layout_.seats.size())) {
         layout_.seats[index].occupied = false;
     }
 }
 
-Vector2 Game::RandomPointInRect(Rectangle r) {
-    float x = r.x + GetRandomValue(6, (int)r.width - 6);
-    float y = r.y + GetRandomValue(6, (int)r.height - 6);
+Vec2 Game::RandomPointInRect(Rect r) {
+    float x = r.x + static_cast<float>(RandomInt(6, static_cast<int>(r.width) - 6));
+    float y = r.y + static_cast<float>(RandomInt(6, static_cast<int>(r.height) - 6));
     return {x, y};
 }
 
-bool Game::MoveTowards(Vector2& pos, const Vector2& target, float speed, float dt, float arriveDistance) {
+bool Game::MoveTowards(Vec2& pos, const Vec2& target, float speed, float dt, float arriveDistance) {
     float dx = target.x - pos.x;
     float dy = target.y - pos.y;
     float dist = std::sqrt(dx * dx + dy * dy);
@@ -490,88 +531,108 @@ float Game::NetProfit() const {
     return stats_.revenue - Config::BaseWageBartender - Config::BaseWageCleaner;
 }
 
-void Game::Draw() {
-    BeginDrawing();
-    ClearBackground(Color{26, 28, 34, 255});
+void Game::Draw(SDL_Renderer* renderer) {
+    SetColor(renderer, 26, 28, 34);
+    SDL_RenderClear(renderer);
 
-    DrawRectangleRec(layout_.floor, Color{74, 63, 53, 255});
-    DrawRectangleLinesEx(layout_.floor, 3, Color{190, 170, 140, 255});
+    SetColor(renderer, 74, 63, 53);
+    FillRect(renderer, layout_.floor);
+    SetColor(renderer, 190, 170, 140);
+    DrawRectOutline(renderer, layout_.floor);
 
-    DrawRectangleRec(layout_.entrance, Color{80, 130, 210, 255});
-    DrawRectangleRec(layout_.exitArea, Color{70, 210, 130, 255});
-    DrawRectangleRec(layout_.barCounter, Color{120, 78, 42, 255});
-    DrawRectangleRec(layout_.standingArea, Color{92, 88, 84, 255});
-    DrawRectangleRec(layout_.toiletArea, toiletBlockedTimer_ > 0.0f ? Color{180, 70, 70, 255} : Color{110, 130, 210, 255});
-    DrawRectangleLinesEx(layout_.queueArea, 2, Color{230, 230, 230, 120});
+    SetColor(renderer, 80, 130, 210);
+    FillRect(renderer, layout_.entrance);
+    SetColor(renderer, 70, 210, 130);
+    FillRect(renderer, layout_.exitArea);
+    SetColor(renderer, 120, 78, 42);
+    FillRect(renderer, layout_.barCounter);
+    SetColor(renderer, 92, 88, 84);
+    FillRect(renderer, layout_.standingArea);
+    if (toiletBlockedTimer_ > 0.0f) SetColor(renderer, 180, 70, 70);
+    else SetColor(renderer, 110, 130, 210);
+    FillRect(renderer, layout_.toiletArea);
+    SetColor(renderer, 230, 230, 230, 120);
+    DrawRectOutline(renderer, layout_.queueArea);
 
     for (const auto& s : layout_.seats) {
-        DrawCircleV(s.pos, 15, s.occupied ? Color{210, 150, 70, 255} : Color{155, 115, 70, 255});
+        if (s.occupied) SetColor(renderer, 210, 150, 70);
+        else SetColor(renderer, 155, 115, 70);
+        FillCenteredRect(renderer, s.pos, 24, 24);
     }
 
     for (const auto& q : layout_.queueSpots) {
-        DrawCircleV(q, 4, Color{245, 245, 245, 110});
+        SetColor(renderer, 245, 245, 245, 120);
+        FillCenteredRect(renderer, q, 8, 8);
     }
 
     for (const auto& m : messes_) {
-        float r = 6 + m.amount * 8;
-        DrawCircleV(m.pos, r, Color{140, 220, 120, 220});
+        float size = 8.0f + m.amount * 9.0f;
+        SetColor(renderer, 140, 220, 120, 220);
+        FillCenteredRect(renderer, m.pos, size, size);
     }
 
     for (const auto& c : customers_) {
-        Color base = Color{230, 210, 100, 255};
-        if (c.mood < 40) base = Color{230, 120, 100, 255};
-        if (c.mood > 75) base = Color{100, 220, 120, 255};
-        DrawCircleV(c.pos, 10, base);
+        Uint8 r = 230;
+        Uint8 g = 210;
+        Uint8 b = 100;
+        if (c.mood < 40.0f) {
+            r = 230;
+            g = 120;
+            b = 100;
+        }
+        if (c.mood > 75.0f) {
+            r = 100;
+            g = 220;
+            b = 120;
+        }
+        SetColor(renderer, r, g, b);
+        FillCenteredRect(renderer, c.pos, 16, 16);
         if (showOverlay_) {
-            DrawRectangle((int)c.pos.x - 14, (int)c.pos.y - 20, 28, 4, Color{40, 40, 40, 220});
-            DrawRectangle((int)c.pos.x - 14, (int)c.pos.y - 20, (int)(28 * (c.mood / 100.0f)), 4, Color{90, 230, 110, 240});
+            DrawBar(renderer, c.pos.x - 14.0f, c.pos.y - 22.0f, 28.0f, 5.0f, c.mood / 100.0f, 90, 230, 110);
         }
     }
 
-    DrawCircleV(bartender_.pos, 12, Color{230, 120, 220, 255});
-    DrawCircleV(cleaner_.pos, 12, Color{120, 220, 230, 255});
+    SetColor(renderer, 230, 120, 220);
+    FillCenteredRect(renderer, bartender_.pos, 20, 20);
+    SetColor(renderer, 120, 220, 230);
+    FillCenteredRect(renderer, cleaner_.pos, 20, 20);
 
-    DrawRectangle(0, 0, Config::ScreenWidth, 70, Color{15, 15, 18, 220});
-    DrawText(TextFormat("Revenue: $%.0f", stats_.revenue), 20, 12, 22, RAYWHITE);
-    DrawText(TextFormat("Stock B/C: %.0f / %.0f", stockBeer_, stockCider_), 230, 12, 22, RAYWHITE);
-    DrawText(TextFormat("Queue: %i", (int)barQueue_.size()), 500, 12, 22, RAYWHITE);
-    DrawText(TextFormat("Time: %.0f", std::max(0.0f, timeRemaining_)), 640, 12, 22, RAYWHITE);
-    DrawText(TextFormat("Price: $%.1f", drinkPrice_), 760, 12, 22, RAYWHITE);
-    DrawText(TextFormat("Mess: %i", (int)messes_.size()), 900, 12, 22, RAYWHITE);
-    DrawText("Toggle overlay: M", 1020, 12, 20, Color{180, 180, 180, 255});
+    Rect topPanel{0, 0, static_cast<float>(Config::ScreenWidth), 70};
+    SetColor(renderer, 15, 15, 18, 220);
+    FillRect(renderer, topPanel);
 
-    DrawText("Entrance", (int)layout_.entrance.x, (int)layout_.entrance.y - 20, 18, RAYWHITE);
-    DrawText("Exit", (int)layout_.exitArea.x + 15, (int)layout_.exitArea.y - 20, 18, RAYWHITE);
-    DrawText("Bar", (int)layout_.barCounter.x + 160, (int)layout_.barCounter.y + 28, 24, RAYWHITE);
-    DrawText("Standing", (int)layout_.standingArea.x + 55, (int)layout_.standingArea.y + 80, 20, RAYWHITE);
-    DrawText("Toilets", (int)layout_.toiletArea.x + 45, (int)layout_.toiletArea.y + 45, 20, RAYWHITE);
+    DrawBar(renderer, 20, 12, 180, 16, std::clamp(stats_.revenue / 600.0f, 0.0f, 1.0f), 240, 210, 90);
+    DrawBar(renderer, 220, 12, 180, 16, (stockBeer_ + stockCider_) / (Config::InitialStockBeer + Config::InitialStockCider), 120, 170, 255);
+    DrawBar(renderer, 420, 12, 180, 16, std::clamp(static_cast<float>(barQueue_.size()) / 12.0f, 0.0f, 1.0f), 255, 140, 120);
+    DrawBar(renderer, 620, 12, 180, 16, std::max(0.0f, timeRemaining_) / Config::DayDuration, 120, 255, 170);
+    DrawBar(renderer, 820, 12, 180, 16, drinkPrice_ / 14.0f, 180, 150, 250);
+    DrawBar(renderer, 1020, 12, 180, 16, std::clamp(static_cast<float>(messes_.size()) / 16.0f, 0.0f, 1.0f), 160, 255, 140);
 
     if (sessionState_ == SessionState::PreOpen) {
-        DrawRectangle(220, 180, 840, 330, Color{10, 10, 16, 235});
-        DrawText("PUB MANAGER PROTOTYPE", 430, 220, 40, RAYWHITE);
-        DrawText("Adjust drink price with Up/Down", 430, 290, 28, RAYWHITE);
-        DrawText(TextFormat("Current price: $%.1f", drinkPrice_), 430, 330, 32, Color{240, 220, 100, 255});
-        DrawText("Press Enter to start day", 430, 390, 28, Color{130, 230, 180, 255});
+        SetColor(renderer, 10, 10, 16, 235);
+        FillRect(renderer, Rect{220, 180, 840, 330});
+        DrawBar(renderer, 420, 310, 440, 28, (drinkPrice_ - 2.0f) / 12.0f, 240, 220, 100);
+        SetColor(renderer, 130, 230, 180, 240);
+        FillRect(renderer, Rect{430, 380, 420, 58});
     }
 
     if (incidentBanner_.timer > 0.0f && !incidentBanner_.text.empty()) {
-        DrawRectangle(330, 78, 620, 38, Color{160, 56, 56, 230});
-        DrawText(incidentBanner_.text.c_str(), 350, 87, 24, RAYWHITE);
+        SetColor(renderer, 160, 56, 56, 230);
+        FillRect(renderer, Rect{330, 78, 620, 30});
     }
 
     if (sessionState_ == SessionState::Summary) {
-        DrawRectangle(190, 120, 900, 470, Color{7, 7, 10, 240});
-        DrawText("END OF DAY SUMMARY", 450, 160, 42, RAYWHITE);
-        DrawText(TextFormat("Total revenue: $%.0f", stats_.revenue), 330, 240, 30, RAYWHITE);
-        DrawText(TextFormat("Drink sales: %i", stats_.drinkSales), 330, 280, 30, RAYWHITE);
-        DrawText(TextFormat("Staff wages: $%.0f", Config::BaseWageBartender + Config::BaseWageCleaner), 330, 320, 30, RAYWHITE);
-        DrawText(TextFormat("Net profit: $%.0f", NetProfit()), 330, 360, 30, Color{130, 230, 180, 255});
-        DrawText(TextFormat("Avg satisfaction: %.1f", AverageSatisfaction()), 330, 400, 30, RAYWHITE);
-        DrawText(TextFormat("Incidents: %i", stats_.incidents), 330, 440, 30, RAYWHITE);
-        DrawText(TextFormat("Customers served: %i", stats_.customersServed), 330, 480, 30, RAYWHITE);
-        DrawText(TextFormat("Left unhappy: %i", stats_.customersUnhappy), 330, 520, 30, RAYWHITE);
-        DrawText("Press R to restart", 510, 560, 30, Color{240, 220, 110, 255});
+        SetColor(renderer, 7, 7, 10, 240);
+        FillRect(renderer, Rect{190, 120, 900, 470});
+        DrawBar(renderer, 300, 220, 680, 24, std::clamp(stats_.revenue / 700.0f, 0.0f, 1.0f), 240, 210, 90);
+        DrawBar(renderer, 300, 270, 680, 24, std::clamp(NetProfit() / 450.0f, 0.0f, 1.0f), 130, 230, 180);
+        DrawBar(renderer, 300, 320, 680, 24, AverageSatisfaction() / 100.0f, 100, 210, 255);
+        DrawBar(renderer, 300, 370, 680, 24, std::clamp(static_cast<float>(stats_.customersServed) / 40.0f, 0.0f, 1.0f), 200, 170, 255);
+        DrawBar(renderer, 300, 420, 680, 24, std::clamp(static_cast<float>(stats_.incidents) / 15.0f, 0.0f, 1.0f), 255, 140, 120);
+        DrawBar(renderer, 300, 470, 680, 24, std::clamp(static_cast<float>(stats_.customersUnhappy) / 30.0f, 0.0f, 1.0f), 250, 120, 120);
+        SetColor(renderer, 240, 220, 110, 240);
+        FillRect(renderer, Rect{470, 530, 340, 34});
     }
 
-    EndDrawing();
+    SDL_RenderPresent(renderer);
 }

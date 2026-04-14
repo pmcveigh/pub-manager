@@ -1,9 +1,30 @@
 #pragma once
 
+#include <SDL2/SDL.h>
+
 #include <deque>
 #include <string>
 #include <vector>
-#include <raylib.h>
+
+struct Vec2 {
+    float x = 0.0f;
+    float y = 0.0f;
+};
+
+struct Rect {
+    float x = 0.0f;
+    float y = 0.0f;
+    float width = 0.0f;
+    float height = 0.0f;
+};
+
+struct InputState {
+    bool upPressed = false;
+    bool downPressed = false;
+    bool enterPressed = false;
+    bool toggleOverlayPressed = false;
+    bool restartPressed = false;
+};
 
 enum class CustomerState {
     Entering,
@@ -18,8 +39,8 @@ enum class CustomerState {
 
 struct Customer {
     int id = 0;
-    Vector2 pos{};
-    Vector2 target{};
+    Vec2 pos{};
+    Vec2 target{};
     CustomerState state = CustomerState::Entering;
     float mood = 70.0f;
     float stateTimer = 0.0f;
@@ -29,25 +50,24 @@ struct Customer {
     int seatIndex = -1;
     bool wantsToilet = false;
     bool hasBeenServed = false;
-    bool wantsAnotherDrink = false;
     bool shouldRemove = false;
     int drinksConsumed = 0;
 };
 
 struct Mess {
     int id = 0;
-    Vector2 pos{};
+    Vec2 pos{};
     float amount = 1.0f;
 };
 
 struct TableSpot {
-    Vector2 pos{};
+    Vec2 pos{};
     bool occupied = false;
 };
 
 struct Staff {
-    Vector2 pos{};
-    Vector2 target{};
+    Vec2 pos{};
+    Vec2 target{};
     float speed = 80.0f;
     float workTimer = 0.0f;
     int targetMessId = -1;
@@ -69,15 +89,15 @@ struct DayStats {
 };
 
 struct Layout {
-    Rectangle floor{};
-    Rectangle entrance{};
-    Rectangle barCounter{};
-    Rectangle queueArea{};
-    Rectangle standingArea{};
-    Rectangle toiletArea{};
-    Rectangle exitArea{};
+    Rect floor{};
+    Rect entrance{};
+    Rect barCounter{};
+    Rect queueArea{};
+    Rect standingArea{};
+    Rect toiletArea{};
+    Rect exitArea{};
     std::vector<TableSpot> seats;
-    std::vector<Vector2> queueSpots;
+    std::vector<Vec2> queueSpots;
 };
 
 enum class SessionState {
@@ -90,8 +110,8 @@ class Game {
 public:
     Game();
     void Reset();
-    void Update(float dt);
-    void Draw();
+    void Update(float dt, const InputState& input);
+    void Draw(SDL_Renderer* renderer);
 
 private:
     Layout layout_{};
@@ -119,7 +139,7 @@ private:
     float bartenderServeTimer_ = 0.0f;
 
     void BuildLayout();
-    void HandleInput();
+    void HandleInput(const InputState& input);
     void UpdateRunning(float dt);
     void SpawnCustomer();
     void UpdateCustomer(Customer& c, float dt);
@@ -127,7 +147,7 @@ private:
     void UpdateBartender(float dt);
     void UpdateCleaner(float dt);
     void UpdateIncidents(float dt);
-    void AddMess(Vector2 pos, float amount);
+    void AddMess(Vec2 pos, float amount);
     void ResolveDepartures();
     void EndDay();
 
@@ -135,8 +155,8 @@ private:
     Mess* FindMess(int id);
     int FindFreeSeatIndex();
     void FreeSeat(int index);
-    Vector2 RandomPointInRect(Rectangle r);
-    bool MoveTowards(Vector2& pos, const Vector2& target, float speed, float dt, float arriveDistance = 4.0f);
+    Vec2 RandomPointInRect(Rect r);
+    bool MoveTowards(Vec2& pos, const Vec2& target, float speed, float dt, float arriveDistance = 4.0f);
     float AverageSatisfaction() const;
     float NetProfit() const;
 };
