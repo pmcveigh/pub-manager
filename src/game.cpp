@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <random>
 
 namespace {
@@ -115,6 +116,9 @@ void Game::Reset() {
 
     incidentBanner_.text.clear();
     incidentBanner_.timer = 0.0f;
+    if (SDL_Window* window = SDL_GetKeyboardFocus()) {
+        SDL_SetWindowTitle(window, "Pub Sim | Pre-open | Enter start | Up/Down price | M mood overlay | R restart");
+    }
 }
 
 void Game::HandleInput(const InputState& input) {
@@ -145,10 +149,19 @@ void Game::Update(float dt, const InputState& input) {
 }
 
 void Game::UpdateRunning(float dt) {
-    timeRemaining_ -= dt;
-    if (timeRemaining_ <= 0.0f) {
-        EndDay();
-        return;
+    if (timeRemaining_ > 0.0f) {
+        timeRemaining_ -= dt;
+        if (timeRemaining_ <= 0.0f) {
+            timeRemaining_ = 0.0f;
+            for (auto& c : customers_) {
+                if (c.state == CustomerState::Queueing || c.state == CustomerState::GoingToQueue || c.state == CustomerState::Entering) {
+                    c.state = CustomerState::Leaving;
+                    c.target = RandomPointInRect(layout_.exitArea);
+                }
+            }
+            barQueue_.clear();
+            bartenderServingCustomerId_ = -1;
+        }
     }
 
     if (toiletBlockedTimer_ > 0.0f) {
@@ -156,7 +169,7 @@ void Game::UpdateRunning(float dt) {
     }
 
     spawnTimer_ -= dt;
-    if (spawnTimer_ <= 0.0f && static_cast<int>(customers_.size()) < Config::MaxCustomers) {
+    if (timeRemaining_ > 0.0f && spawnTimer_ <= 0.0f && static_cast<int>(customers_.size()) < Config::MaxCustomers) {
         SpawnCustomer();
         spawnTimer_ = Config::CustomerSpawnInterval + RandomInt(0, 120) / 100.0f;
     }
@@ -171,6 +184,26 @@ void Game::UpdateRunning(float dt) {
     UpdateCleaner(dt);
     UpdateIncidents(dt);
     ResolveDepartures();
+    if (timeRemaining_ <= 0.0f && customers_.empty()) {
+        EndDay();
+        return;
+    }
+
+    char title[256];
+    std::snprintf(
+        title,
+        sizeof(title),
+        "Pub Sim | Cust %d | Queue %d | Stock %.0f | Time %.0fs | Served %d | Revenue %.0f",
+        static_cast<int>(customers_.size()),
+        static_cast<int>(barQueue_.size()),
+        stockBeer_ + stockCider_,
+        timeRemaining_,
+        stats_.customersServed,
+        stats_.revenue
+    );
+    if (SDL_Window* window = SDL_GetKeyboardFocus()) {
+        SDL_SetWindowTitle(window, title);
+    }
 }
 
 void Game::SpawnCustomer() {
@@ -181,6 +214,7 @@ void Game::SpawnCustomer() {
     c.state = CustomerState::Entering;
     c.stateTimer = 1.0f;
     c.socialTimer = 15.0f + RandomInt(0, 1200) / 100.0f;
+    c.nextMessTimer = 1.2f + RandomInt(0, 320) / 100.0f;
     c.wantsToilet = RandomInt(0, 100) < 45;
     customers_.push_back(c);
 }
@@ -218,23 +252,31 @@ void Game::UpdateCustomer(Customer& c, float dt) {
             c.mood -= Config::MoodWaitPenaltyPerSecond * dt;
             break;
         }
+        case CustomerState::BeingServed:
+            c.mood -= Config::MoodWaitPenaltyPerSecond * 0.7f * dt;
+            break;
+        case CustomerState::GoingToSeatOrStanding:
         case CustomerState::GoingToSeat:
             if (MoveTowards(c.pos, c.target, Config::CustomerMoveSpeed, dt)) {
-                c.state = CustomerState::Socializing;
+                c.state = CustomerState::Drinking;
                 c.stateTimer = 8.0f + RandomInt(0, 900) / 100.0f;
+                c.nextMessTimer = 1.2f + RandomInt(0, 320) / 100.0f;
             }
             break;
+        case CustomerState::Drinking:
         case CustomerState::Socializing:
             c.stateTimer -= dt;
-            if (RandomInt(0, 1000) < 2) {
+            c.nextMessTimer -= dt;
+            if (c.nextMessTimer <= 0.0f) {
                 AddMess({c.pos.x + static_cast<float>(RandomInt(-12, 12)), c.pos.y + static_cast<float>(RandomInt(-12, 12))}, 0.7f);
+                c.nextMessTimer = 2.4f + RandomInt(0, 350) / 100.0f;
             }
             if (c.stateTimer <= 0.0f) {
                 if (c.wantsToilet && RandomInt(0, 100) < 60) {
                     c.state = CustomerState::GoingToToilet;
                     c.target = RandomPointInRect(layout_.toiletArea);
                     c.wantsToilet = false;
-                } else if (c.drinksConsumed < 2 && RandomInt(0, 100) < 48) {
+                } else if (timeRemaining_ > 0.0f && c.drinksConsumed < 2 && RandomInt(0, 100) < 48) {
                     c.state = CustomerState::GoingToQueue;
                     barQueue_.push_back(c.id);
                     c.queueIndex = static_cast<int>(barQueue_.size()) - 1;
@@ -259,7 +301,7 @@ void Game::UpdateCustomer(Customer& c, float dt) {
                 c.mood -= 2.8f * dt;
             }
             if (c.stateTimer <= 0.0f) {
-                if (c.drinksConsumed < 2 && RandomInt(0, 100) < 35) {
+                if (timeRemaining_ > 0.0f && c.drinksConsumed < 2 && RandomInt(0, 100) < 35) {
                     c.state = CustomerState::GoingToQueue;
                     barQueue_.push_back(c.id);
                     c.queueIndex = static_cast<int>(barQueue_.size()) - 1;
@@ -271,14 +313,22 @@ void Game::UpdateCustomer(Customer& c, float dt) {
             break;
         case CustomerState::Leaving:
             if (MoveTowards(c.pos, c.target, Config::CustomerMoveSpeed, dt, 8.0f)) {
+                c.state = CustomerState::Exited;
                 c.shouldRemove = true;
             }
+            break;
+        case CustomerState::Exited:
+            c.shouldRemove = true;
             break;
     }
 
     if (c.mood <= 8.0f && c.state != CustomerState::Leaving) {
         c.state = CustomerState::Leaving;
         c.target = RandomPointInRect(layout_.exitArea);
+    }
+
+    if (toiletBlockedTimer_ > 0.0f) {
+        c.mood -= 0.25f * dt;
     }
 }
 
@@ -310,6 +360,7 @@ void Game::UpdateBartender(float dt) {
         bartenderServingCustomerId_ = -1;
         return;
     }
+    c->state = CustomerState::BeingServed;
 
     Vec2 serveSpot = {layout_.barCounter.x + 120, layout_.barCounter.y + layout_.barCounter.height + 16};
     if (!MoveTowards(c->pos, serveSpot, Config::CustomerMoveSpeed, dt)) {
@@ -347,11 +398,11 @@ void Game::UpdateBartender(float dt) {
         layout_.seats[seatIdx].occupied = true;
         c->seatIndex = seatIdx;
         c->target = layout_.seats[seatIdx].pos;
-        c->state = CustomerState::GoingToSeat;
+        c->state = CustomerState::GoingToSeatOrStanding;
     } else {
         c->seatIndex = -1;
         c->target = RandomPointInRect(layout_.standingArea);
-        c->state = CustomerState::GoingToSeat;
+        c->state = CustomerState::GoingToSeatOrStanding;
         c->mood -= Config::MoodNoSeatPenalty;
     }
 
@@ -463,14 +514,22 @@ void Game::ResolveDepartures() {
 }
 
 void Game::EndDay() {
-    for (auto& c : customers_) {
-        if (c.seatIndex >= 0) FreeSeat(c.seatIndex);
-        stats_.customersDeparted += 1;
-        stats_.totalFinalMood += c.mood;
-        if (c.mood < 40.0f) stats_.customersUnhappy += 1;
+    char title[256];
+    std::snprintf(
+        title,
+        sizeof(title),
+        "Summary | Revenue %.0f | Served %d | AvgMood %.1f | Unhappy %d | Incidents %d | Wages %.0f | Net %.1f | Press R to restart",
+        stats_.revenue,
+        stats_.customersServed,
+        AverageSatisfaction(),
+        stats_.customersUnhappy,
+        stats_.incidents,
+        Config::BaseWageBartender + Config::BaseWageCleaner,
+        NetProfit()
+    );
+    if (SDL_Window* window = SDL_GetKeyboardFocus()) {
+        SDL_SetWindowTitle(window, title);
     }
-    customers_.clear();
-    barQueue_.clear();
     sessionState_ = SessionState::Summary;
 }
 
@@ -575,6 +634,26 @@ void Game::Draw(SDL_Renderer* renderer) {
         Uint8 r = 230;
         Uint8 g = 210;
         Uint8 b = 100;
+        if (c.state == CustomerState::Queueing || c.state == CustomerState::GoingToQueue) {
+            r = 240;
+            g = 190;
+            b = 100;
+        }
+        if (c.state == CustomerState::BeingServed) {
+            r = 240;
+            g = 120;
+            b = 220;
+        }
+        if (c.state == CustomerState::GoingToToilet || c.state == CustomerState::AtToilet) {
+            r = 120;
+            g = 190;
+            b = 255;
+        }
+        if (c.state == CustomerState::Leaving) {
+            r = 200;
+            g = 200;
+            b = 200;
+        }
         if (c.mood < 40.0f) {
             r = 230;
             g = 120;
